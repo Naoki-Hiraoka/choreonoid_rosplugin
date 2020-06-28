@@ -89,7 +89,7 @@ public:
     ros::Publisher clock_pub;
     // ros control
     cnoid_robot_hardware::CnoidRobotHW *cnoid_hw_;
-    controller_manager::ControllerManager *ros_cm_;
+    cnoid_robot_hardware::ControllerManager *ros_cm_;
 };
 
 }
@@ -428,7 +428,42 @@ void BodyNode::initialize(ControllerIO* io, std::vector<std::string> &opt)
       ROS_ERROR("Faild to initialize hardware");
       //exit(1);
     }
+#ifndef USE_PR2_CONTROLLER
     ros_cm_ = new controller_manager::ControllerManager (cnoid_hw_, *rosNode);
+#else
+    ros_cm_ = new pr2_controller_manager::ControllerManager (cnoid_hw_, *rosNode);
+    // read robot description from parameter server
+    std::string robot_description_string;
+    TiXmlDocument robot_description_xml;
+    if (rosNode->getParam("robot_description", robot_description_string))
+      robot_description_xml.Parse(robot_description_string.c_str());
+    else
+      {
+        ROS_ERROR("Could not load the robot description from the parameter server");
+        return;
+      }
+    TiXmlElement *robot_description_root = robot_description_xml.FirstChildElement("robot");
+    if (!robot_description_root)
+      {
+        ROS_ERROR("Could not parse the robot description");
+        return;
+      }
+
+    // Initialize controller manager from robot description
+    if (!ros_cm_->initXml(robot_description_root)){
+      ROS_ERROR("Could not initialize controller manager");
+      return;
+    }
+
+    // Set calibrated
+    for (unsigned int i = 0; i < ros_cm_->state_->joint_states_.size(); ++i)
+    {
+      ros_cm_->state_->joint_states_[i].calibrated_ = true;
+    }
+
+    // Put RobotState
+    cnoid_hw_->state_ = ros_cm_->state_;
+#endif
 }
 
 void BodyNode::start(ControllerIO* io, double maxPublishRate)
@@ -512,7 +547,11 @@ void BodyNode::control()
     //
     cnoid_hw_->read(now, period);
     // read q from choreonoid
+#ifndef USE_PR2_CONTROLLER
     ros_cm_->update(now, period);
+#else
+    ros_cm_->update();
+#endif
 
     // write tau to choreonoid
     cnoid_hw_->write(now, period);

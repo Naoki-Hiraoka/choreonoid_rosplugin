@@ -45,6 +45,7 @@
 #include <angles/angles.h>
 
 // ros_control
+#ifndef USE_PR2_CONTROLLER
 #include <controller_manager/controller_manager.h>
 #include <control_toolbox/pid.h>
 #include <hardware_interface/joint_command_interface.h>
@@ -53,6 +54,10 @@
 #include <joint_limits_interface/joint_limits_interface.h>
 #include <joint_limits_interface/joint_limits_rosparam.h>
 #include <joint_limits_interface/joint_limits_urdf.h>
+#else
+#include <pr2_controller_manager/controller_manager.h>
+#include <pr2_hardware_interface/hardware_interface.h>
+#endif
 
 // URDF
 #include <urdf/model.h>
@@ -65,8 +70,15 @@
 
 namespace cnoid_robot_hardware
 {
+#ifndef USE_PR2_CONTROLLER
+typedef hardware_interface::RobotHW RobotHW;
+typedef controller_manager::ControllerManager ControllerManager;
+#else
+typedef pr2_hardware_interface::HardwareInterface RobotHW;
+typedef pr2_controller_manager::ControllerManager ControllerManager;
+#endif
 
-class CnoidRobotHW : public hardware_interface::RobotHW
+class CnoidRobotHW : public RobotHW
 {
 public:
 
@@ -137,6 +149,10 @@ public:
    */
   virtual void write(const ros::Time& time, const ros::Duration& period);
 
+#ifdef USE_PR2_CONTROLLER
+  pr2_mechanism_model::RobotState* state_;
+  std::vector<bool> pr2_controllers_loaded_;
+#endif
 protected:
   // Methods used to control a joint.
   enum ControlMethod {EFFORT, POSITION, POSITION_PID, VELOCITY, VELOCITY_PID};
@@ -144,6 +160,7 @@ protected:
 
   unsigned int number_of_angles_;
 
+#ifndef USE_PR2_CONTROLLER
   hardware_interface::JointStateInterface    js_interface_;
   hardware_interface::PositionJointInterface pj_interface_;
   //hardware_interface::VelocityJointInterface vj_interface_;
@@ -156,6 +173,7 @@ protected:
   //joint_limits_interface::VelocityJointSoftLimitsInterface vj_limits_interface_;
   //joint_limits_interface::EffortJointSaturationInterface   ej_sat_interface_;
   //joint_limits_interface::EffortJointSoftLimitsInterface   ej_limits_interface_;
+#endif
 
   std::vector<double> joint_lower_limits_;
   std::vector<double> joint_upper_limits_;

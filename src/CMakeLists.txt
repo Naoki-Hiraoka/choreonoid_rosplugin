@@ -18,6 +18,8 @@ target_link_libraries(${target}
   ${CHOREONOID_LIBRARIES}
   )
 
+set_target_properties(${target} PROPERTIES COMPILE_FLAGS "-DUSE_PR2_CONTROLLER")
+
 install(TARGETS ${target}
   LIBRARY DESTINATION ${CHOREONOID_PLUGIN_SUBDIR}
   )

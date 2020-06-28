@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   realtime_tools
   control_toolbox
   controller_manager
+  pr2_controller_manager
   hardware_interface
   transmission_interface
   joint_limits_interface

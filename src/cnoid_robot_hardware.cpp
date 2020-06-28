@@ -88,6 +88,9 @@ bool CnoidRobotHW::init(ros::NodeHandle& root_nh, ros::NodeHandle &robot_hw_nh)/
   joint_effort_command_.resize(number_of_angles_);
   joint_position_command_.resize(number_of_angles_);
   joint_velocity_command_.resize(number_of_angles_);
+#ifdef USE_PR2_CONTROLLER
+  pr2_controllers_loaded_.resize(number_of_angles_, false);
+#endif
 
   // Initialize values
   for(unsigned int j = 0; j < number_of_angles_; j++) {
@@ -104,7 +107,7 @@ bool CnoidRobotHW::init(ros::NodeHandle& root_nh, ros::NodeHandle &robot_hw_nh)/
     ROS_INFO("joint: %s / [initial] q: %f, dq: %f, u: %f / [gain] P: %f, D: %f",
              jointname.c_str(), joint->q(), joint->dq(), joint->u(),
              p_gain[j], d_gain[j]);
-
+#ifndef USE_PR2_CONTROLLER
     // Create joint state interface for all joints
     js_interface_.registerHandle(hardware_interface::JointStateHandle(
         jointname, &joint_position_[j], &joint_velocity_[j], &joint_effort_[j]));
@@ -134,13 +137,75 @@ bool CnoidRobotHW::init(ros::NodeHandle& root_nh, ros::NodeHandle &robot_hw_nh)/
       limits_handle(joint_handle, // We read the state and read/write the command
                     limits);       // Limits spec
     pj_sat_interface_.registerHandle(limits_handle);
+#endif
   }
 
+#ifndef USE_PR2_CONTROLLER
   // Register interfaces
   registerInterface(&js_interface_);
   registerInterface(&pj_interface_);
   //registerInterface(&vj_interface_);
   //registerInterface(&ej_interface_);
+#else
+  std::string robot_description_string;
+  TiXmlDocument robot_description_xml;
+  if (root_nh.getParam("robot_description", robot_description_string))
+    robot_description_xml.Parse(robot_description_string.c_str());
+  else
+    {
+      ROS_ERROR("Could not load the robot description from the parameter server");
+      return false;
+    }
+  TiXmlElement *robot_description_root = robot_description_xml.FirstChildElement("robot");
+  if (!robot_description_root)
+    {
+      ROS_ERROR("Could not parse the robot description");
+      return false;
+    }
+  // Constructs the actuators by parsing custom xml.
+  TiXmlElement *xit = NULL;
+  for (xit = robot_description_root->FirstChildElement("transmission"); xit;
+       xit = xit->NextSiblingElement("transmission"))
+    {
+      std::string type(xit->Attribute("type"));
+
+      if ( type == "pr2_mechanism_model/SimpleTransmission" )
+        {
+          std::string joint_name = xit->FirstChildElement("joint")->Attribute("name");
+          if (std::find(use_joints.begin(), use_joints.end(), joint_name) != use_joints.end())
+            {
+              std::string actuator_name = xit->FirstChildElement("actuator")->Attribute("name");
+              actuators_[actuator_name] = new pr2_hardware_interface::Actuator(actuator_name);
+            }
+        }
+      else if ( type == "pr2_mechanism_model/WristTransmission" )
+        {
+          std::string flex_joint_name = xit->FirstChildElement("flexJoint")->Attribute("name");
+          std::string roll_joint_name = xit->FirstChildElement("rollJoint")->Attribute("name");
+          if (std::find(use_joints.begin(), use_joints.end(), flex_joint_name) != use_joints.end()
+              && std::find(use_joints.begin(), use_joints.end(), roll_joint_name) != use_joints.end())
+            {
+              std::string right_actuator_name = xit->FirstChildElement("rightActuator")->Attribute("name");
+              std::string left_actuator_name = xit->FirstChildElement("leftActuator")->Attribute("name");
+              actuators_[right_actuator_name] = new pr2_hardware_interface::Actuator(right_actuator_name);
+              actuators_[left_actuator_name] = new pr2_hardware_interface::Actuator(left_actuator_name);
+            }
+        }
+      else if ( type == "pr2_mechanism_model/PR2GripperTransmission" )
+        {
+          std::string joint_name = xit->FirstChildElement("gap_joint")->Attribute("name");
+          if (std::find(use_joints.begin(), use_joints.end(), joint_name) != use_joints.end())
+            {
+              std::string actuator_name = xit->FirstChildElement("actuator")->Attribute("name");
+              actuators_[actuator_name] = new pr2_hardware_interface::Actuator(actuator_name);
+            }
+        }
+      else
+        {
+          ROS_WARN("Transmission type %s is not supported by CnoidRobotHW.  ", type.c_str());
+        }
+    }
+#endif
 
   return true;
 }
@@ -153,7 +218,18 @@ void CnoidRobotHW::read(const ros::Time& time, const ros::Duration& period)
     joint_position_[i] = joint->q();
     joint_velocity_[i] = joint->dq();
     joint_effort_[i]   = joint->u();
+#ifdef USE_PR2_CONTROLLER
+    pr2_mechanism_model::JointState* js = state_->getJointState(joint->name());
+    if(!js)ROS_WARN("Joint %s is not found in URDF", joint->name().c_str());
+    js->position_ = joint_position_[i];
+    js->velocity_ = joint_velocity_[i];
+    js->measured_effort_ = joint_effort_[i];
+#endif
   }
+
+#ifdef USE_PR2_CONTROLLER
+  state_->propagateJointPositionToActuatorPosition();
+#endif
   return;
 }
 
@@ -165,14 +241,28 @@ void CnoidRobotHW::write(const ros::Time& time, const ros::Duration& period)
   // jaco:    6
   // hand:    3
   //ROS_INFO("tm: %f", time.toSec());
+#ifdef USE_PR2_CONTROLLER
+  current_time_ = time;
+  state_->propagateActuatorEffortToJointEffort();
+#endif
+
   for(int i = 0; i < use_joints.size(); ++i) {
     cnoid::Link* joint = cnoid_body->link(use_joints[i]);
     double tq;
+
     double pgain = p_gain[i];
     //double igain = i_gain[i];
     double dgain = d_gain[i];
 
     tq = pgain*(joint_position_command_[i] - joint->q()) - dgain*joint->dq();
+
+#ifdef USE_PR2_CONTROLLER
+    // Overwrite torque if pr2_controllers have been loaded.
+    pr2_mechanism_model::JointState* js = state_->getJointState(joint->name());
+    if(!js)ROS_WARN("Joint %s is not found in URDF", joint->name().c_str());
+    if( js->commanded_effort_ != 0 ) pr2_controllers_loaded_[i] = true;
+    if(pr2_controllers_loaded_[i]) tq = js->commanded_effort_;
+#endif
 
     //ROS_INFO("%f = %f %f %f", tq, joint_position_command_[i], joint->q(), joint->dq());
     joint->u() = tq;
